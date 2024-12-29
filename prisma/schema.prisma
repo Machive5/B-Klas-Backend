@@ -27,6 +27,6 @@ model Participant {
 
 model User {
   id    Int    @id @default(autoincrement())
-  name  String
+  username  String
   password String
 }

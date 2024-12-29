@@ -4,17 +4,18 @@ import { prismaClient } from "..";
 import { ErrorCodes, HttpException } from "../exception/httpException";
 import { userSchema } from "../schema/auth";
 import * as jwt from "jsonwebtoken";
-import * as cryptoJs from "crypto-js";
-import { SECRET_KEY } from "../dotenv";
+import { REFRESH_KEY, ACCESS_KEY } from "../dotenv";
+import { AuthException } from "../exception/authException";
 
 export const signup = async (req:Request,res:Response,next:NextFunction) => {
+    console.log(req.body);
 
     const request = userSchema.safeParse(req.body);
     if (!request.success) {
         next(new HttpException(400,"Invalid data",ErrorCodes.INVALID_DATA,request.error));
         return;
     }
-    let user = await prismaClient.user.findFirst({where: {name:request.data?.name}});
+    let user = await prismaClient.user.findFirst({where: {username:request.data?.username}});
     if (user) {
         next(new HttpException(400,"User already exists",ErrorCodes.USER_ALREADY_EXISTS,null));
         return;
@@ -23,7 +24,7 @@ export const signup = async (req:Request,res:Response,next:NextFunction) => {
     try {
         user = await prismaClient.user.create({
             data: {
-                name: request.data.name,
+                username: request.data.username,
                 password: hashSync(request.data.password, 10),
             }
         });
@@ -46,7 +47,7 @@ export const signin = async (req:Request,res:Response,next:NextFunction) => {
     }
     let user;
     try {
-        user = await prismaClient.user.findFirst({where: {name: request.data?.name}});
+        user = await prismaClient.user.findFirst({where: {username: request.data?.username}});
     } catch (error) {
         next(new HttpException(500,"Internal server error",ErrorCodes.INTERNAL_SERVER_ERROR,error));
         return;
@@ -63,20 +64,78 @@ export const signin = async (req:Request,res:Response,next:NextFunction) => {
     }
 
     try {
-        let token = jwt.sign({
+        let refreshToken = jwt.sign({
             id: user.id,
-            name: user.name,
-        },SECRET_KEY as string,{expiresIn: "48h", algorithm: "HS256"});
+            username: user.username,
+            tokenType: "refresh token",
+        },REFRESH_KEY as string,{expiresIn: "7d", algorithm: "HS256"});
 
-        token = cryptoJs.AES.encrypt(token,SECRET_KEY as string).toString();
+        let accessToken = jwt.sign({
+            id: user.id,
+            username: user.username,
+            tokenType: "access token"
+        }, ACCESS_KEY as string, {expiresIn: "15m", algorithm: "HS256"});
 
-        res.json({
-            user,
-            token: token,
+        refreshToken = encodeURIComponent(refreshToken);
+        accessToken = encodeURIComponent(accessToken);
+
+        res.cookie('refreshToken',refreshToken,{
+            expires: new Date(Date.now() + 7*24*3600000),
+            httpOnly: true,
+            secure: true,
+        }).cookie('accessToken',accessToken, {
+            expires: new Date(Date.now() + 15*600000),
+            secure: true,
         });
+
+        res.send({
+            message: "login success"
+        })
+
     } catch (error) {
         next(new HttpException(500,"Internal server error",ErrorCodes.INTERNAL_SERVER_ERROR,error));
         return;
         
+    }
+}
+
+export const refresh = async (req:Request,res:Response,next:NextFunction) => {
+    try {
+        const token = req.cookies.refreshToken;
+
+        if (!token) {
+            next(new AuthException("Token not found",null));
+            return
+        }
+        
+        const payload:any = jwt.verify(token, REFRESH_KEY as string);
+
+        const user = await prismaClient.user.findFirst({where: {id: payload.id}});
+
+        if (!user) {
+            next(new AuthException("User not found",null));
+            return;
+        }
+
+        let accessToken = jwt.sign({
+            id: user.id,
+            username: user.username,
+            tokenType: "access token"
+        }, ACCESS_KEY as string, {expiresIn: "15m", algorithm: "HS256"});
+        accessToken = encodeURIComponent(accessToken);
+
+        res.cookie('accessToken',accessToken, {
+            expires: new Date(Date.now() + 15*600000),
+            secure: true,
+        });
+
+        res.send({
+            message: "access token updated"
+        })
+
+
+    } catch (error) {
+        throw error;
+        return;
     }
 }
